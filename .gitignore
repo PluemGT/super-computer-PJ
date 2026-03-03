@@ -1,10 +1,12 @@
-# Frontend
-super-sim-frontend/node_modules/
-super-sim-frontend/.next/
+# ห้ามเอาโฟลเดอร์ Library ขึ้นเด็ดขาด
+node_modules/
+venv/
+env/
 
-# Backend
-super-sim-backend/venv/
-super-sim-backend/__pycache__/
+# ห้ามเอาไฟล์ระบบหรือไฟล์ที่แอบสร้างตอนรันขึ้น
+.next/
+__pycache__/
 
-# OS files
+# ไฟล์ขยะของ Mac/Windows
 .DS_Store
+Thumbs.db
