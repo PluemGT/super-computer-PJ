@@ -1,0 +1,10 @@
+# Frontend
+super-sim-frontend/node_modules/
+super-sim-frontend/.next/
+
+# Backend
+super-sim-backend/venv/
+super-sim-backend/__pycache__/
+
+# OS files
+.DS_Store
