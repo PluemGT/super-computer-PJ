@@ -1,83 +1,168 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import sqlite3
+import os
 
-app = FastAPI(title="Virtual Supercomputer Master Node")
+app = FastAPI(title="Weather Forecasting Web-Cluster")
 
-# ==========================================
-# 1. การตั้งค่า CORS (สำคัญมาก!)
-# อนุญาตให้มือถือ/iPad หรือเว็บเบราว์เซอร์เครื่องอื่น วิ่งเข้ามาขอข้อมูลได้
-# ==========================================
+# เปิด CORS ให้มือถือเข้าถึงได้
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # เปิดรับทุก IP ชั่วคราวเพื่อให้เทสต์ง่าย
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ==========================================
-# 2. จำลอง "ก้อนข้อมูล (Chunks)" ที่ถูกหั่นรอไว้แล้ว
-# สมมติว่างานคือการหา "จำนวนเฉพาะ (Prime Numbers)" ตั้งแต่ 1 ถึง 100,000
-# เราหั่นแบ่งเป็น 10 ก้อน ก้อนละ 10,000 ตัวเลข
-# ==========================================
-TOTAL_CHUNKS = 10
-tasks_db = []
-for i in range(TOTAL_CHUNKS):
-    start_num = (i * 10000) + 1
-    end_num = (i + 1) * 10000
-    tasks_db.append({
-        "task_id": i + 1,
-        "start": start_num,
-        "end": end_num,
-        "status": "pending",  # สถานะ: pending, processing, completed
-        "result": None
-    })
+DB_FILE = "weather_cluster.db"
 
-# กำหนดหน้าตาข้อมูลตอนที่มือถือส่งคำตอบกลับมา
-class ResultPayload(BaseModel):
+# ==========================================
+# 1. ฟังก์ชันจัดการ Database (SQLite)
+# ==========================================
+def init_db():
+    """สร้างตารางและสร้างข้อมูลแผนที่อากาศ 100 ชิ้น (Grid 10x10) ถังยังไม่มีข้อมูล"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # สร้างตารางเก็บงาน (Tasks)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS grid_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            grid_x INTEGER,
+            grid_y INTEGER,
+            start_temp FLOAT,
+            final_temp FLOAT,
+            status TEXT DEFAULT 'pending',
+            worker_id TEXT
+        )
+    ''')
+    
+    # สร้างตารางเก็บรายชื่อคนงาน (Workers)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS workers (
+            worker_id TEXT PRIMARY KEY,
+            tasks_completed INTEGER DEFAULT 0
+        )
+    ''')
+    
+    # ถ้าตารางงานยังว่างเปล่า ให้สร้างข้อมูลแผนที่ 100 ชิ้น (10x10)
+    cursor.execute("SELECT COUNT(*) FROM grid_tasks")
+    if cursor.fetchone()[0] == 0:
+        for x in range(10):
+            for y in range(10):
+                # สมมติอุณหภูมิตั้งต้นแบบสุ่มนิดๆ (เช่น 25 องศา)
+                base_temp = 25.0 + (x * 0.5) + (y * 0.2)
+                cursor.execute(
+                    "INSERT INTO grid_tasks (grid_x, grid_y, start_temp) VALUES (?, ?, ?)",
+                    (x, y, base_temp)
+                )
+    
+    conn.commit()
+    conn.close()
+
+# รันฟังก์ชันสร้าง DB ทันทีที่เปิดเซิร์ฟเวอร์
+init_db()
+
+# ==========================================
+# 2. Schema สำหรับรับข้อมูลจาก Frontend
+# ==========================================
+class WorkerRegister(BaseModel):
+    worker_id: str
+
+class TaskResult(BaseModel):
     task_id: int
-    primes_found: int  # ส่งกลับมาว่าเจอจำนวนเฉพาะกี่ตัว
+    worker_id: str
+    final_temp: float
 
 # ==========================================
-# 3. สร้าง API (Endpoints) สำหรับทำงาน
+# 3. API สำหรับ Web-based Cluster
 # ==========================================
 
-@app.get("/")
-def read_root():
-    return {"message": "Master Node is Running!"}
+@app.post("/api/register")
+def register_worker(data: WorkerRegister):
+    """API สำหรับลงทะเบียนมือถือเครื่องใหม่"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO workers (worker_id) VALUES (?)", (data.worker_id,))
+    conn.commit()
+    conn.close()
+    return {"message": f"Worker {data.worker_id} registered!"}
 
-# API ที่ 1: สำหรับหน้า Dashboard เอาไว้ดูความคืบหน้ารวม
-@app.get("/api/status")
-def get_system_status():
-    completed = sum(1 for task in tasks_db if task["status"] == "completed")
-    progress_percent = (completed / TOTAL_CHUNKS) * 100
-    return {
-        "total_tasks": TOTAL_CHUNKS,
-        "completed_tasks": completed,
-        "progress_percent": progress_percent,
-        "tasks_detail": tasks_db
-    }
-
-# API ที่ 2: สำหรับมือถือ (Worker) มาร้องขอรับงานไปทำ
 @app.get("/api/get-task")
 def get_task():
-    # หาคิวงานที่ยังไม่มีคนทำ (pending)
-    for task in tasks_db:
-        if task["status"] == "pending":
-            task["status"] = "processing" # เปลี่ยนสถานะว่ากำลังมีคนเอาไปทำ
-            return {"message": "Task assigned", "task": task}
-            
-    return {"message": "No more tasks available!", "task": None}
+    """API จ่ายงาน: หาพื้นที่แผนที่ที่ยังไม่มีคนทำไปให้มือถือ"""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row  # ให้คืนค่าเป็นแบบ Dictionary
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM grid_tasks WHERE status = 'pending' LIMIT 1")
+    task = cursor.fetchone()
+    
+    if task:
+        # เปลี่ยนสถานะเป็นกำลังทำ เพื่อไม่ให้เครื่องอื่นแย่ง
+        cursor.execute("UPDATE grid_tasks SET status = 'processing' WHERE id = ?", (task['id'],))
+        conn.commit()
+        conn.close()
+        return {"has_task": True, "task": dict(task)}
+    
+    conn.close()
+    return {"has_task": False, "message": "Simulation Complete!"}
 
-# API ที่ 3: สำหรับมือถือ (Worker) ส่งคำตอบที่คำนวณเสร็จแล้วกลับมา
 @app.post("/api/submit-result")
-def submit_result(payload: ResultPayload):
-    # เอาผลลัพธ์ไปอัปเดตในฐานข้อมูลของเรา
-    for task in tasks_db:
-        if task["task_id"] == payload.task_id:
-            task["status"] = "completed"
-            task["result"] = payload.primes_found
-            return {"message": f"Result for task {payload.task_id} saved successfully!"}
-            
-    return {"error": "Task ID not found"}
+def submit_result(data: TaskResult):
+    """API รับงาน: มือถือส่งอุณหภูมิที่คำนวณเสร็จแล้วกลับมา"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # อัปเดตผลลัพธ์ลงแผนที่
+    cursor.execute(
+        "UPDATE grid_tasks SET status = 'completed', final_temp = ?, worker_id = ? WHERE id = ?",
+        (data.final_temp, data.worker_id, data.task_id)
+    )
+    # เพิ่มแต้มให้ Worker
+    cursor.execute(
+        "UPDATE workers SET tasks_completed = tasks_completed + 1 WHERE worker_id = ?",
+        (data.worker_id,)
+    )
+    
+    conn.commit()
+    conn.close()
+    return {"message": "Result saved!"}
+
+@app.get("/api/dashboard")
+def get_dashboard_data():
+    """API สำหรับหน้าจอ Mac (PM Dashboard) ดึงข้อมูลไปวาดแผนที่"""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM grid_tasks")
+    tasks = [dict(row) for row in cursor.fetchall()]
+    
+    cursor.execute("SELECT * FROM workers")
+    workers = [dict(row) for row in cursor.fetchall()]
+    
+    conn.close()
+    
+    completed = sum(1 for t in tasks if t['status'] == 'completed')
+    return {
+        "progress_percent": (completed / len(tasks)) * 100 if tasks else 0,
+        "total_workers": len(workers),
+        "map_data": tasks,
+        "worker_stats": workers
+    }
+@app.post("/api/reset")
+def reset_simulation():
+    """API สำหรับล้างฐานข้อมูล เริ่มซิมูเลชันใหม่ตั้งแต่ 0"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    # ลบข้อมูลเก่าทิ้งให้หมด
+    cursor.execute("DROP TABLE IF EXISTS grid_tasks")
+    cursor.execute("DROP TABLE IF EXISTS workers")
+    conn.commit()
+    conn.close()
+    
+    # รันฟังก์ชันสร้างตารางใหม่
+    init_db()
+    return {"message": "Simulation reset successfully!"}
