@@ -21,7 +21,7 @@ export default function WorkerPage() {
   
   const isWorkingRef = useRef(false);
 
-  // 🎯 กำหนด IP เครื่อง Mac ของคุณตรงนี้ (ถ้าวันหลังเปลี่ยนเน็ต ค่อยมาแก้เลขตรงนี้นะครับ)
+  // 🎯 กำหนด IP เครื่อง Mac ของคุณ
   const MASTER_NODE_IP = "172.20.10.6"; 
 
   useEffect(() => {
@@ -36,7 +36,6 @@ export default function WorkerPage() {
     
     setWorkerName(savedId);
 
-    // 🎯 ยิงตรงไปที่ IP Mac เลย ไม่ต้องพึ่ง hostname
     fetch(`http://${MASTER_NODE_IP}:8000/api/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -55,7 +54,6 @@ export default function WorkerPage() {
     }
 
     try {
-      // 🎯 ยิงตรงไปที่ IP Mac
       const res = await fetch(`http://${MASTER_NODE_IP}:8000/api/get-task`);
       const data = await res.json();
 
@@ -67,32 +65,75 @@ export default function WorkerPage() {
       }
 
       const task = data.task;
-      addLog(`[RECV] GRID(X:${task.grid_x}, Y:${task.grid_y}) | BASE_TEMP: ${task.start_temp.toFixed(2)}°C`);
-
-      let currentTemp = task.start_temp;
       
-      // แบ่งงานเป็น 10 ก้อนย่อย ให้มือถือได้พักหายใจ กันเว็บค้างและโดนบังคับรีเฟรช
-      for (let j = 0; j < 10; j++) {
-        for (let i = 0; i < 10000; i++) {
-          currentTemp += (Math.random() * 0.02) - 0.01; 
+      addLog(`[RECV] TARGET: ${task.region || 'Unknown'} | BASE: ${task.start_temp.toFixed(2)}°C`);
+      addLog(`🧠 [AI] INITIATING ML TRAINING (GRADIENT DESCENT)...`);
+
+      // 🎯 1. สร้าง Dataset จำลองย้อนหลัง 5 วันสำหรับเทรน AI
+      const baseTemp = task.start_temp;
+      const historicalData = [
+        { day: 1, temp: baseTemp - 1.5 },
+        { day: 2, temp: baseTemp - 0.8 },
+        { day: 3, temp: baseTemp + 0.5 },
+        { day: 4, temp: baseTemp + 0.1 },
+        { day: 5, temp: baseTemp + 1.2 },
+      ];
+
+      // 🎯 2. พารามิเตอร์สำหรับ Machine Learning
+      let weight = 0; // ความชัน (w)
+      let bias = 0;   // จุดตัดแกน Y (b)
+      const learningRate = 0.01;
+      const epochs = 50000; // ให้ Worker รันเทรน AI 50,000 รอบ
+
+      // 🎯 3. กระบวนการ Training Loop
+      for (let epoch = 0; epoch < epochs; epoch++) {
+        let totalErrorW = 0;
+        let totalErrorB = 0;
+
+        for (let i = 0; i < historicalData.length; i++) {
+          const x = historicalData[i].day;
+          const y = historicalData[i].temp;
+          
+          // ทำนายผลชั่วคราว
+          const prediction = (weight * x) + bias;
+          const error = y - prediction;
+
+          // คำนวณหาทิศทางปรับค่า
+          totalErrorW += -2 * x * error;
+          totalErrorB += -2 * error;
         }
-        await new Promise(resolve => setTimeout(resolve, 100)); 
+
+        // ปรับค่าน้ำหนักให้สมการฉลาดขึ้น
+        weight -= (totalErrorW / historicalData.length) * learningRate;
+        bias -= (totalErrorB / historicalData.length) * learningRate;
+
+        // พักหายใจให้ CPU มือถือทุกๆ 5,000 รอบ ป้องกันเบราว์เซอร์ค้าง
+        if (epoch % 5000 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 50)); 
+        }
       }
 
-      // 🎯 ยิงตรงไปที่ IP Mac
+      // 🎯 4. นำสมการมาทำนายผลของวันที่ 6 (พรุ่งนี้)
+      const predictedTemp = (weight * 6) + bias;
+
+      addLog(`[AI] MODEL OPTIMIZED | W: ${weight.toFixed(3)}, B: ${bias.toFixed(3)}`);
+
+      // 🎯 5. ส่งผลการทำนายและค่าน้ำหนัก AI กลับไปที่ Master Node
       await fetch(`http://${MASTER_NODE_IP}:8000/api/submit-result`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           task_id: task.id, 
           worker_id: workerName, 
-          final_temp: currentTemp 
+          final_temp: predictedTemp,
+          ai_weight: weight,
+          ai_bias: bias
         }),
       });
 
-      addLog(`[DONE] GRID(X:${task.grid_x}, Y:${task.grid_y}) | FINAL_TEMP: ${currentTemp.toFixed(2)}°C`);
+      addLog(`[DONE] PREDICTED TEMP: ${predictedTemp.toFixed(2)}°C`);
 
-      setTimeout(processNextTask, 1000);
+      setTimeout(processNextTask, 1500);
 
     } catch (error) {
       addLog("⚠️ สัญญาณขัดข้อง กำลังเชื่อมต่อ Master Node ใหม่...");
@@ -118,7 +159,7 @@ export default function WorkerPage() {
 
       <div className="z-10 w-full max-w-md bg-black/50 border border-[#064e3b] p-6 rounded-2xl shadow-[0_0_20px_rgba(6,78,59,0.3)] backdrop-blur-md">
         <h2 className="text-center text-xl font-black tracking-widest text-[#22c55e] mb-1 drop-shadow-[0_0_5px_#22c55e]">
-          CYRUS // WORKER_NODE <span className="text-[10px] text-white">v2.0</span>
+          CYRUS // WORKER_NODE <span className="text-[10px] text-white">v4.0 (AI)</span>
         </h2>
         <p className="text-center text-xs font-mono text-[#22c55e]/60 mb-6 uppercase">
           Identity: <span className="text-white font-bold">{workerName}</span>
@@ -132,7 +173,7 @@ export default function WorkerPage() {
               : "bg-transparent text-[#22c55e] border-[#22c55e] hover:bg-[#22c55e] hover:text-black shadow-[0_0_15px_rgba(34,197,94,0.2)]"
           }`}
         >
-          {isWorking ? "⏸️ SUSPEND CALCULATION" : "▶️ INITIALIZE CALCULATION"}
+          {isWorking ? "⏸️ SUSPEND AI TRAINING" : "▶️ INITIALIZE AI ENGINE"}
         </button>
       </div>
 
