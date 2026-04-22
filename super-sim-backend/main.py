@@ -5,6 +5,7 @@ import sqlite3
 import os
 import pandas as pd
 import io
+import subprocess # 🎯 นำเข้าไลบรารีสำหรับสั่งรันไฟล์ Python (RPA)
 
 app = FastAPI(title="Cyrus AI Distributed Cluster (Consensus Mode)")
 
@@ -196,3 +197,97 @@ def reset_simulation():
     if os.path.exists(DB_FILE): os.remove(DB_FILE)
     init_db()
     return {"message": "System Purged and Re-initialized"}
+
+# ==========================================
+# 5. 🚀 APIs สำหรับสั่งงาน RPA Bot (เวอร์ชันดักจับ Error)
+# ==========================================
+import sys # 🎯 ดึงพาธของ Python ตัวที่กำลังรัน Uvicorn อยู่ตอนนี้
+
+@app.post("/api/trigger-scraper")
+async def trigger_scraper():
+    try:
+        # ใช้ sys.executable เพื่อการันตีว่าใช้ Python ตัวเดียวกับที่ลง pandas ไว้
+        result = subprocess.run(
+            [sys.executable, "scraper_bot.py"], 
+            capture_output=True, text=True, check=True
+        )
+        return {"message": "ดึงข้อมูลสำเร็จ! ✅"}
+    except subprocess.CalledProcessError as e:
+        # 🎯 ดึงข้อความ Error จริงๆ จากบอทมาโชว์
+        return {"error": f"บอท Scraper แจ้งว่า:\n{e.stderr or e.stdout}"}
+    except Exception as e:
+        return {"error": f"ระบบขัดข้อง: {str(e)}"}
+
+@app.post("/api/trigger-report")
+async def trigger_report():
+    try:
+        result = subprocess.run(
+            [sys.executable, "rpa_bot.py"], 
+            capture_output=True, text=True, check=True
+        )
+        return {"message": "ส่ง Email สรุปผลสำเร็จ! ✅"}
+    except subprocess.CalledProcessError as e:
+        return {"error": f"บอท Report แจ้งว่า:\n{e.stderr or e.stdout}"}
+    except Exception as e:
+        return {"error": f"ระบบขัดข้อง: {str(e)}"}
+
+import traceback # อย่าลืม import ไว้ด้านบนสุดของไฟล์ด้วยนะครับ (ถ้ายังไม่มี)
+
+@app.post("/api/trigger-scraper")
+async def trigger_scraper():
+    try:
+        print("\n--- 🚀 เริ่มกระบวนการ RPA SCRAPER ---")
+        print("1. กำลังสั่งรันบอท Scraper...")
+        subprocess.run([sys.executable, "scraper_bot.py"], capture_output=True, text=True, check=True)
+        print("2. รันบอทเสร็จสิ้น กำลังหาไฟล์...")
+        
+        OUTPUT_FILE = "real_thailand_data.csv"
+        if not os.path.exists(OUTPUT_FILE):
+            print("❌ ERROR: หาไฟล์ไม่เจอ!")
+            return {"error": f"รันเสร็จแล้วแต่ไม่เจอไฟล์ {OUTPUT_FILE} ในระบบ"}
+
+        print("3. เจอไฟล์แล้ว กำลังอ่าน CSV...")
+        # 🎯 ท่าไม้ตาย: ใช้ utf-8-sig เพื่อกำจัดอักขระซ่อนรูป (BOM) ที่มักจะติดมากับหัวคอลัมน์แรก
+        df = pd.read_csv(OUTPUT_FILE, encoding='utf-8-sig')
+        
+        # คลีนชื่อคอลัมน์: ลบช่องว่าง และปรับเป็นตัวเล็กให้หมด
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        print(f"4. หัวคอลัมน์ที่โปรแกรมมองเห็น: {list(df.columns)}")
+
+        # ถ้าบังเอิญหัวคอลัมน์ยังเป็น 'at' ให้แก้เป็น 'lat'
+        if 'at' in df.columns and 'lat' not in df.columns:
+            df.rename(columns={'at': 'lat'}, inplace=True)
+
+        print(f"5. จำนวนข้อมูลที่อ่านได้จากไฟล์: {len(df)} แถว. กำลังเชื่อมต่อ Database...")
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM grid_tasks')
+        cursor.execute('DELETE FROM workers')
+        
+        count = 0
+        for index, row in df.iterrows():
+            # ป้องกัน Error กรณีมีค่าว่างใน CSV
+            if pd.isna(row.get('lat')) or pd.isna(row.get('lng')):
+                continue 
+
+            cursor.execute('''
+                INSERT INTO grid_tasks (grid_x, grid_y, start_temp, region, status, results_count, sum_temp, ai_weight, ai_bias)
+                VALUES (?, ?, ?, ?, 'pending', 0, 0.0, 0.0, 0.0)
+            ''', (float(row['lat']), float(row['lng']), float(row['temp']), str(row['region'])))
+            count += 1
+        
+        conn.commit()
+        conn.close()
+        print(f"6. ✅ บันทึกลง Database สำเร็จจำนวน {count} แถว!")
+        print("----------------------------------\n")
+        
+        return {"message": f"ดึงข้อมูลจริงและบันทึกลงแผนที่เรียบร้อย ({count} จุด) 🚀"}
+        
+    except subprocess.CalledProcessError as e:
+        print(f"❌ ERROR: บอทพังกลางทาง: {e.stderr or e.stdout}")
+        return {"error": f"บอท Scraper แครช:\n{e.stderr or e.stdout}"}
+    except Exception as e:
+        error_msg = traceback.format_exc()
+        print(f"❌ ERROR: ระบบฐานข้อมูลขัดข้อง:\n{error_msg}")
+        return {"error": f"ระบบฐานข้อมูลขัดข้อง: {str(e)}"}

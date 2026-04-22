@@ -1,3 +1,4 @@
+// ไฟล์: src/app/worker/page.tsx
 "use client";
 import { useState, useEffect, useRef } from "react";
 
@@ -19,10 +20,14 @@ export default function WorkerPage() {
   const [isWorking, setIsWorking] = useState(false);
   const [workerName, setWorkerName] = useState("");
   
+  // 🎯 State สำหรับกราฟ AI
+  const [lossHistory, setLossHistory] = useState<number[]>([]);
+  const [currentEpoch, setCurrentEpoch] = useState(0);
+  
   const isWorkingRef = useRef(false);
 
-  // 🎯 กำหนด IP เครื่อง Mac ของคุณ
-  const MASTER_NODE_IP = "172.20.10.6"; 
+  // 🎯 เอากลับมาแล้ว! ล็อค IP เครื่อง Mac ของคุณปลื้ม
+  const MASTER_NODE_IP = "172.20.10.13"; 
 
   useEffect(() => {
     let savedId = localStorage.getItem("cyrus_worker_id");
@@ -69,7 +74,6 @@ export default function WorkerPage() {
       addLog(`[RECV] TARGET: ${task.region || 'Unknown'} | BASE: ${task.start_temp.toFixed(2)}°C`);
       addLog(`🧠 [AI] INITIATING ML TRAINING (GRADIENT DESCENT)...`);
 
-      // 🎯 1. สร้าง Dataset จำลองย้อนหลัง 5 วันสำหรับเทรน AI
       const baseTemp = task.start_temp;
       const historicalData = [
         { day: 1, temp: baseTemp - 1.5 },
@@ -79,46 +83,49 @@ export default function WorkerPage() {
         { day: 5, temp: baseTemp + 1.2 },
       ];
 
-      // 🎯 2. พารามิเตอร์สำหรับ Machine Learning
-      let weight = 0; // ความชัน (w)
-      let bias = 0;   // จุดตัดแกน Y (b)
+      let weight = 0; 
+      let bias = 0;   
       const learningRate = 0.01;
-      const epochs = 50000; // ให้ Worker รันเทรน AI 50,000 รอบ
+      const epochs = 50000; 
 
-      // 🎯 3. กระบวนการ Training Loop
+      // ล้างกราฟก่อนเทรนจังหวัดใหม่
+      let localLossHistory: number[] = [];
+      setLossHistory([]);
+
       for (let epoch = 0; epoch < epochs; epoch++) {
         let totalErrorW = 0;
         let totalErrorB = 0;
+        let epochLoss = 0; // เก็บค่าความคลาดเคลื่อนรวม
 
         for (let i = 0; i < historicalData.length; i++) {
           const x = historicalData[i].day;
           const y = historicalData[i].temp;
           
-          // ทำนายผลชั่วคราว
           const prediction = (weight * x) + bias;
           const error = y - prediction;
 
-          // คำนวณหาทิศทางปรับค่า
+          epochLoss += error * error; // คำนวณ Loss
           totalErrorW += -2 * x * error;
           totalErrorB += -2 * error;
         }
 
-        // ปรับค่าน้ำหนักให้สมการฉลาดขึ้น
         weight -= (totalErrorW / historicalData.length) * learningRate;
         bias -= (totalErrorB / historicalData.length) * learningRate;
 
-        // พักหายใจให้ CPU มือถือทุกๆ 5,000 รอบ ป้องกันเบราว์เซอร์ค้าง
+        // 🎯 อัปเดตกราฟโชว์กรรมการทุกๆ 5,000 รอบ
         if (epoch % 5000 === 0) {
+          const mse = epochLoss / historicalData.length;
+          localLossHistory.push(mse);
+          setLossHistory([...localLossHistory]);
+          setCurrentEpoch(epoch);
           await new Promise(resolve => setTimeout(resolve, 50)); 
         }
       }
 
-      // 🎯 4. นำสมการมาทำนายผลของวันที่ 6 (พรุ่งนี้)
       const predictedTemp = (weight * 6) + bias;
 
       addLog(`[AI] MODEL OPTIMIZED | W: ${weight.toFixed(3)}, B: ${bias.toFixed(3)}`);
 
-      // 🎯 5. ส่งผลการทำนายและค่าน้ำหนัก AI กลับไปที่ Master Node
       await fetch(`http://${MASTER_NODE_IP}:8000/api/submit-result`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -159,12 +166,39 @@ export default function WorkerPage() {
 
       <div className="z-10 w-full max-w-md bg-black/50 border border-[#064e3b] p-6 rounded-2xl shadow-[0_0_20px_rgba(6,78,59,0.3)] backdrop-blur-md">
         <h2 className="text-center text-xl font-black tracking-widest text-[#22c55e] mb-1 drop-shadow-[0_0_5px_#22c55e]">
-          CYRUS // WORKER_NODE <span className="text-[10px] text-white">v4.0 (AI)</span>
+          CYRUS // WORKER_NODE <span className="text-[10px] text-white">v5.0 (Edge AI)</span>
         </h2>
         <p className="text-center text-xs font-mono text-[#22c55e]/60 mb-6 uppercase">
           Identity: <span className="text-white font-bold">{workerName}</span>
         </p>
         
+        {/* 🎯 แผงกราฟ AI เอามาใส่ไว้เหนือปุ่มเหมือนเดิม */}
+        {isWorking && (
+          <div className="mb-6 p-4 bg-[#050505] border border-[#064e3b] rounded-xl shadow-inner">
+            <div className="flex justify-between items-end mb-2 font-mono text-[10px]">
+              <span className="text-cyan-400">AI LEARNING LOSS (MSE)</span>
+              <span className="text-[#22c55e]">EPOCH: {currentEpoch}/50000</span>
+            </div>
+            
+            <div className="h-20 w-full flex items-end gap-1 border-b border-[#064e3b] pb-1">
+              {lossHistory.map((loss, idx) => {
+                const maxLoss = Math.max(...lossHistory, 0.1);
+                const heightPercent = Math.max((loss / maxLoss) * 100, 5); 
+                return (
+                  <div 
+                    key={idx} 
+                    className="flex-1 bg-gradient-to-t from-[#22c55e] to-[#00f6ff] transition-all duration-300"
+                    style={{ height: `${heightPercent}%`, opacity: 0.8 + (idx * 0.02) }}
+                  ></div>
+                );
+              })}
+            </div>
+            <div className="text-center mt-2 text-[9px] font-mono opacity-50">
+              OPTIMIZING WEIGHTS & BIAS...
+            </div>
+          </div>
+        )}
+
         <button 
           onClick={toggleWork} 
           className={`w-full py-4 text-sm font-bold uppercase tracking-widest rounded-lg transition-all duration-300 border ${
